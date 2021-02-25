@@ -1,4 +1,4 @@
-package goWs
+package ws
 
 import (
 	"github.com/gorilla/websocket"
