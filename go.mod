@@ -1,4 +1,4 @@
-module goWs
+module github.com/lcr2000/goWs
 
 go 1.13
 
