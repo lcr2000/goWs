@@ -139,19 +139,24 @@ func (conn *WsConnection) writeLoop() {
 	for {
 		select {
 		case msg := <-conn.outChan:
-			switch msg.To.ToType {
-			case ToAll:
-				_ = conn.pushAll(msg)
-			case ToGroup:
-				_ = conn.pushGroup(msg)
-			case ToConn:
-				_ = conn.pushConn(msg)
-			default:
-			}
+			_ = conn.msgDispatch(msg)
 		case <-conn.closeChan:
 			break
 		}
 	}
+}
+
+func (conn *WsConnection) msgDispatch(msg *WsMessage) error {
+	switch msg.To.ToType {
+	case ToAll:
+		_ = conn.pushAll(msg)
+	case ToGroup:
+		_ = conn.pushGroup(msg)
+	case ToConn:
+		_ = conn.pushConn(msg)
+	default:
+	}
+	return nil
 }
 
 func (conn *WsConnection) pushAll(msg *WsMessage) error {
@@ -169,7 +174,7 @@ func (conn *WsConnection) pushAll(msg *WsMessage) error {
 }
 
 func (conn *WsConnection) pushGroup(msg *WsMessage) error {
-	allWsConn, err := conn.collect.GetAll()
+	allWsConn, err := conn.collect.GetGroup(msg.To.To)
 	if err != nil {
 		return err
 	}
