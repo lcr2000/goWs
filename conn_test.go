@@ -15,7 +15,7 @@ func TestConn(t *testing.T) {
 }
 
 func wsHandler(w http.ResponseWriter, r *http.Request) {
-	conn := NewWsConnection("test", empty{})
+	conn := NewWsConnection(empty{}, beat{})
 	if err := conn.Open(w, r); err != nil {
 		return
 	}
@@ -85,4 +85,18 @@ func (e empty) GetAll() (wsConnList []*websocket.Conn, err error) {
 func (e empty) Del(id string) error {
 	delete(col, id)
 	return nil
+}
+
+type beat struct{}
+
+func (b beat) IsPingMsg(msg []byte) bool {
+	return false
+}
+
+func (b beat) GetPongMsg() []byte {
+	return []byte{}
+}
+
+func (b beat) GetHeartbeatTime() int {
+	return 10
 }
