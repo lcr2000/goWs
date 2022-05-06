@@ -99,15 +99,15 @@ func (conn *WsConnection) Write(msg *WsMessage) (err error)
 
 ## 快速开始
  ```go
- import (
- 	"errors"
- 	"fmt"
- 	"github.com/gorilla/websocket"
- 	"net/http"
- )
- 
-func QuickStart(w http.ResponseWriter, r *http.Request) {
-	conn := NewWsConnection(collect{}, beat{})
+import (
+	"fmt"
+	"github.com/gorilla/websocket"
+	"github.com/lcr2000/goWs"
+	"net/http"
+)
+
+func Ws(w http.ResponseWriter, r *http.Request) {
+	conn := ws.NewWsConnection(collect{}, beat{})
 	if err := conn.Open(w, r); err != nil {
 		return
 	}
@@ -117,7 +117,7 @@ func QuickStart(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		fmt.Println(string(msg.Data))
-		err = conn.Write(&WsMessage{
+		err = conn.Write(&ws.WsMessage{
 			To:          msg.To,
 			MessageType: msg.MessageType,
 			Data:        msg.Data,
@@ -127,11 +127,8 @@ func QuickStart(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 }
- ```
 
-collect为实现Collection接口的具体类。
-
- ```go
+// collect为实现Collection接口的具体类。
 type collect struct{}
 
 func (e collect) Set(id string, wsConn *websocket.Conn) error {
@@ -153,11 +150,8 @@ func (e collect) GetAll() (wsConnList []*websocket.Conn, err error) {
 func (e collect) Del(id string) error {
 	return nil
 }
-```
 
-beat为实现HeartBeater接口的具体类。
-
- ```go
+// beat为实现HeartBeater接口的具体类。
 type beat struct{}
 
 func (b beat) IsPingMsg(msg []byte) bool {
