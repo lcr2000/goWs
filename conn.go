@@ -188,6 +188,7 @@ func (wc *WsConnection) writeLoop() {
 	for {
 		select {
 		case msg := <-wc.outChan:
+			wc.keepAlive()
 			_ = wc.msgDispatch(msg)
 		case <-timer.C:
 			if !wc.isAlive() {

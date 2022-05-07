@@ -129,17 +129,16 @@ func WsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// collect为实现Collection接口的具体类。
 type collect struct{}
 
-func (c collect) Set(id string, wsConn *WsConnection) error {
+func (c collect) Set(id string, wsConn *ws.WsConnection) error {
 	m.RLock()
 	defer m.RUnlock()
 	col[id] = wsConn
 	return nil
 }
 
-func (c collect) Get(id string) (wsConn *WsConnection, err error) {
+func (c collect) Get(id string) (wsConn *ws.WsConnection, err error) {
 	m.RLock()
 	defer m.RUnlock()
 	conn, ok := col[id]
@@ -150,7 +149,7 @@ func (c collect) Get(id string) (wsConn *WsConnection, err error) {
 	return conn, nil
 }
 
-func (c collect) GetGroup(groupId string) (wsConnList []*WsConnection, err error) {
+func (c collect) GetGroup(groupId string) (wsConnList []*ws.WsConnection, err error) {
 	m.RLock()
 	defer m.RUnlock()
 	for _, conn := range col {
@@ -159,7 +158,7 @@ func (c collect) GetGroup(groupId string) (wsConnList []*WsConnection, err error
 	return wsConnList, nil
 }
 
-func (c collect) GetAll() (wsConnList []*WsConnection, err error) {
+func (c collect) GetAll() (wsConnList []*ws.WsConnection, err error) {
 	m.RLock()
 	defer m.RUnlock()
 	for _, conn := range col {
@@ -173,7 +172,6 @@ func (c collect) Del(id string) error {
 	return nil
 }
 
-// beat为实现HeartBeater接口的具体类。
 type beat struct{}
 
 func (b beat) IsPingMsg(msg []byte) bool {
