@@ -1,4 +1,4 @@
-package goWs
+package gows
 
 import (
 	"errors"
@@ -14,10 +14,11 @@ func TestConn(t *testing.T) {
 }
 
 func wsHandler(w http.ResponseWriter, r *http.Request) {
-	conn := NewWsConnection(collect{}, beat{})
+	conn := NewConnection(&callback{}, &beat{})
 	if err := conn.Open(w, r); err != nil {
 		return
 	}
+	con.Add(conn.GetConnID(), conn)
 	for {
 		// 读取消息
 		msg, err := conn.Receive()
@@ -26,8 +27,7 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		fmt.Println(string(msg.Data))
 		// 发送消息
-		err = conn.Write(&WsMessage{
-			To:          msg.To,
+		err = conn.Write(&Message{
 			MessageType: msg.MessageType,
 			Data:        msg.Data,
 		})
@@ -37,67 +37,65 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-var m sync.RWMutex
-
-var col map[string]*WsConnection
+var (
+	con connect
+)
 
 func init() {
-	col = make(map[string]*WsConnection)
+	con.connect = make(map[string]*Connection)
 }
 
-type collect struct{}
-
-func (c collect) Set(id string, wsConn *WsConnection) error {
-	m.RLock()
-	defer m.RUnlock()
-	col[id] = wsConn
-	return nil
+type connect struct {
+	sync.RWMutex
+	connect map[string]*Connection
 }
 
-func (c collect) Get(id string) (wsConn *WsConnection, err error) {
-	m.RLock()
-	defer m.RUnlock()
-	conn, ok := col[id]
+func (c *connect) Add(ID string, wsConn *Connection) {
+	c.RLock()
+	defer c.RUnlock()
+	c.connect[ID] = wsConn
+}
+
+func (c *connect) Get(ID string) (*Connection, error) {
+	c.RLock()
+	defer c.RUnlock()
+	conn, ok := c.connect[ID]
 	if !ok {
-		err = errors.New("id is not exist")
-		return
+		return nil, errors.New("connect is not exist")
 	}
 	return conn, nil
 }
 
-func (c collect) GetGroup(groupId string) (wsConnList []*WsConnection, err error) {
-	m.RLock()
-	defer m.RUnlock()
-	for _, conn := range col {
-		wsConnList = append(wsConnList, conn)
+func (c *connect) GetAll() []*Connection {
+	c.RLock()
+	defer c.RUnlock()
+	connList := make([]*Connection, 0, len(c.connect))
+	for _, conn := range c.connect {
+		connList = append(connList, conn)
 	}
-	return wsConnList, nil
+	return connList
 }
 
-func (c collect) GetAll() (wsConnList []*WsConnection, err error) {
-	m.RLock()
-	defer m.RUnlock()
-	for _, conn := range col {
-		wsConnList = append(wsConnList, conn)
-	}
-	return wsConnList, nil
+func (c *connect) Del(ID string) {
+	delete(c.connect, ID)
 }
 
-func (c collect) Del(id string) error {
-	delete(col, id)
-	return nil
+type callback struct{}
+
+func (c *callback) ConnClose(ID string) {
+	con.Del(ID)
 }
 
 type beat struct{}
 
-func (b beat) IsPingMsg(msg []byte) bool {
-	return false
+func (b *beat) IsPingMsg(msg []byte) bool {
+	return string(msg) == Ping
 }
 
-func (b beat) GetPongMsg() []byte {
-	return []byte{}
+func (b *beat) GetPongMsg() []byte {
+	return []byte(Pong)
 }
 
-func (b beat) GetHeartbeatTime() int {
-	return 10
+func (b *beat) GetAliveTime() int {
+	return 600
 }
