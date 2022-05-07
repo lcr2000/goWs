@@ -3,7 +3,6 @@ package goWs
 import (
 	"errors"
 	"fmt"
-	"github.com/gorilla/websocket"
 	"net/http"
 	"sync"
 	"testing"
@@ -15,16 +14,18 @@ func TestConn(t *testing.T) {
 }
 
 func wsHandler(w http.ResponseWriter, r *http.Request) {
-	conn := NewWsConnection(empty{}, beat{})
+	conn := NewWsConnection(collect{}, beat{})
 	if err := conn.Open(w, r); err != nil {
 		return
 	}
 	for {
+		// 读取消息
 		msg, err := conn.Receive()
 		if err != nil {
 			break
 		}
 		fmt.Println(string(msg.Data))
+		// 发送消息
 		err = conn.Write(&WsMessage{
 			To:          msg.To,
 			MessageType: msg.MessageType,
@@ -38,22 +39,22 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 
 var m sync.RWMutex
 
-var col map[string]*websocket.Conn
+var col map[string]*WsConnection
 
 func init() {
-	col = make(map[string]*websocket.Conn)
+	col = make(map[string]*WsConnection)
 }
 
-type empty struct{}
+type collect struct{}
 
-func (e empty) Set(id string, wsConn *websocket.Conn) error {
+func (c collect) Set(id string, wsConn *WsConnection) error {
 	m.RLock()
 	defer m.RUnlock()
 	col[id] = wsConn
 	return nil
 }
 
-func (e empty) Get(id string) (wsConn *websocket.Conn, err error) {
+func (c collect) Get(id string) (wsConn *WsConnection, err error) {
 	m.RLock()
 	defer m.RUnlock()
 	conn, ok := col[id]
@@ -64,7 +65,7 @@ func (e empty) Get(id string) (wsConn *websocket.Conn, err error) {
 	return conn, nil
 }
 
-func (e empty) GetGroup(groupName string) (wsConnList []*websocket.Conn, err error) {
+func (c collect) GetGroup(groupId string) (wsConnList []*WsConnection, err error) {
 	m.RLock()
 	defer m.RUnlock()
 	for _, conn := range col {
@@ -73,7 +74,7 @@ func (e empty) GetGroup(groupName string) (wsConnList []*websocket.Conn, err err
 	return wsConnList, nil
 }
 
-func (e empty) GetAll() (wsConnList []*websocket.Conn, err error) {
+func (c collect) GetAll() (wsConnList []*WsConnection, err error) {
 	m.RLock()
 	defer m.RUnlock()
 	for _, conn := range col {
@@ -82,7 +83,7 @@ func (e empty) GetAll() (wsConnList []*websocket.Conn, err error) {
 	return wsConnList, nil
 }
 
-func (e empty) Del(id string) error {
+func (c collect) Del(id string) error {
 	delete(col, id)
 	return nil
 }

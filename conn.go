@@ -15,58 +15,57 @@ type Conn interface {
 	Write(msg *WsMessage) (err error)
 }
 
-// WsConnection表示维护的一个websocket类型.
+// WsConnection 维护的websocket长连接.
 type WsConnection struct {
 	// id
 	id string
-	// 在线集合接口
+	// collect 在线集合接口
 	collect Collection
-	// 维持心跳接口
+	// heartBeater 维持心跳接口
 	heartBeater HeartBeater
-	// 底层websocket
+	// wsConn 底层websocket
 	wsConn *websocket.Conn
-	// 读队列
+	// inChan 读队列
 	inChan chan *WsMessage
-	// 写队列
+	// outChan 写队列
 	outChan chan *WsMessage
-	// 关闭通知
+	// closeChan 关闭通知
 	closeChan chan struct{}
-	// 最近一次心跳时间
+	// lastHeartbeatTime 最近一次心跳时间
 	lastHeartbeatTime time.Time
-	// 保护closeChan只被执行一次
+	// mutex 保护closeChan只被执行一次
 	mutex sync.Mutex
-	// closeChan 状态
+	// isClosed closeChan 状态
 	isClosed bool
 }
 
-// WsMessage描述了一个消息实体.
+// WsMessage 定义了一个消息实体.
 type WsMessage struct {
-	// 消息发送对象
+	// To 消息发送对象
 	To MsgTo
-	// The message types are defined in RFC 6455, section 11.8.
+	// MessageType The message types are defined in RFC 6455, section 11.8.
 	MessageType int
-	// 消息内容
+	// Data 消息内容
 	Data []byte
 }
 
-// ToType定义了消息发送的对象类型.
+// ToType 定义了消息发送的对象类型.
 type ToType string
 
-// MsgTo定义了消息发送的对象.
+// MsgTo 定义了消息发送的对象.
 type MsgTo struct {
 	ToType ToType
 	To     string
 }
 
-// http升级websocket协议的配置. 允许所有CORS跨域请求.
+// upgrade http升级websocket协议的配置. 允许所有CORS跨域请求.
 var upgrade = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
 		return true
 	},
 }
 
-// NewWsConnection为新建一个WsConnection连接.
-// collect为Collection接口类的具体实现；heartBeater为HeartBeater接口的具体实现.
+// NewWsConnection 新建一个WsConnection类型的长连接.
 func NewWsConnection(collect Collection, heartBeater HeartBeater) *WsConnection {
 	return &WsConnection{
 		id:                uuid.NewString(),
@@ -80,83 +79,83 @@ func NewWsConnection(collect Collection, heartBeater HeartBeater) *WsConnection 
 	}
 }
 
-// GetWsConnId获取WsConnection中唯一连接id
-func (conn *WsConnection) GetWsConnId() string {
-	return conn.id
+// GetWsConnId 获取WsConnection中唯一连接id
+func (wc *WsConnection) GetWsConnId() string {
+	return wc.id
 }
 
-func (conn *WsConnection) Close() error {
-	return conn.removeAndClose()
+func (wc *WsConnection) Close() error {
+	return wc.removeAndClose()
 }
 
-// removeAndClose移除维护的连接、关闭wsConn
-func (conn *WsConnection) removeAndClose() error {
-	_ = conn.wsConn.Close()
-	conn.mutex.Lock()
-	defer conn.mutex.Unlock()
-	if !conn.isClosed {
-		close(conn.closeChan)
-		conn.isClosed = true
+// removeAndClose 移除维护的连接、关闭wsConn
+func (wc *WsConnection) removeAndClose() error {
+	_ = wc.wsConn.Close()
+	wc.mutex.Lock()
+	defer wc.mutex.Unlock()
+	if !wc.isClosed {
+		close(wc.closeChan)
+		wc.isClosed = true
 	}
-	return conn.collect.Del(conn.id)
+	return wc.collect.Del(wc.id)
 }
 
-func (conn *WsConnection) Open(w http.ResponseWriter, r *http.Request) error {
+func (wc *WsConnection) Open(w http.ResponseWriter, r *http.Request) error {
 	wsSocket, err := upgrade.Upgrade(w, r, nil)
 	if err != nil {
 		return err
 	}
-	conn.setWsConn(wsSocket)
-	err = conn.collect.Set(conn.id, wsSocket)
+	wc.setWsConn(wsSocket)
+	err = wc.collect.Set(wc.id, wc)
 	if err != nil {
-		_ = conn.removeAndClose()
+		_ = wc.removeAndClose()
 		return err
 	}
-	go conn.readLoop()
-	go conn.writeLoop()
+	go wc.readLoop()
+	go wc.writeLoop()
 	return nil
 }
 
-// setWsConn将升级得到的webSocket协议写入WsConnection中.
-func (conn *WsConnection) setWsConn(wsConn *websocket.Conn) {
-	conn.wsConn = wsConn
+// setWsConn 将升级得到的webSocket协议写入WsConnection中.
+func (wc *WsConnection) setWsConn(wsConn *websocket.Conn) {
+	wc.wsConn = wsConn
 }
 
-func (conn *WsConnection) Receive() (msg *WsMessage, err error) {
+func (wc *WsConnection) Receive() (msg *WsMessage, err error) {
 	select {
-	case msg = <-conn.inChan:
-	case <-conn.closeChan:
+	case msg = <-wc.inChan:
+	case <-wc.closeChan:
 		err = ErrWsConnClose
 	}
 	return
 }
 
-func (conn *WsConnection) Write(msg *WsMessage) (err error) {
+func (wc *WsConnection) Write(msg *WsMessage) (err error) {
 	select {
-	case conn.outChan <- msg:
-	case <-conn.closeChan:
+	case wc.outChan <- msg:
+	case <-wc.closeChan:
 		err = ErrWsConnClose
 	}
 	return
 }
 
-// readLoop通过监听消息,向inChan写入WsMessage.
-func (conn *WsConnection) readLoop() {
+// readLoop 通过监听消息,向inChan写入WsMessage.
+func (wc *WsConnection) readLoop() {
 	for {
-		msgType, data, err := conn.wsConn.ReadMessage()
+		msgType, data, err := wc.wsConn.ReadMessage()
 		if err != nil {
-			_ = conn.removeAndClose()
+			_ = wc.removeAndClose()
 			goto EXIT
 		}
-		if conn.isPing(data) {
+		if wc.isPing(data) {
 			continue
 		}
 		select {
-		case conn.inChan <- &WsMessage{
+		case wc.inChan <- &WsMessage{
 			MessageType: msgType,
 			Data:        data,
 		}:
-		case <-conn.closeChan:
+		case <-wc.closeChan:
 			goto EXIT
 		}
 	}
@@ -165,38 +164,38 @@ EXIT:
 	return
 }
 
-// isHeatBeat校验数据是否为客户端的Ping数据. 如果是，则向客户端写回Pong数据.
-func (conn *WsConnection) isPing(msg []byte) bool {
-	if !conn.heartBeater.IsPingMsg(msg) {
+// isHeatBeat 校验数据是否为客户端的Ping数据. 如果是,则向客户端写回Pong数据.
+func (wc *WsConnection) isPing(msg []byte) bool {
+	if !wc.heartBeater.IsPingMsg(msg) {
 		return false
 	}
-	conn.keepAlive()
-	_ = conn.Write(&WsMessage{
+	wc.keepAlive()
+	_ = wc.Write(&WsMessage{
 		To: MsgTo{
 			ToType: ToConn,
-			To:     conn.GetWsConnId(),
+			To:     wc.GetWsConnId(),
 		},
 		MessageType: websocket.TextMessage,
-		Data:        conn.heartBeater.GetPongMsg(),
+		Data:        wc.heartBeater.GetPongMsg(),
 	})
 	return true
 }
 
-// writeLoop通过监听outChan队列,向websocket写入消息.
-func (conn *WsConnection) writeLoop() {
-	timer := time.NewTimer(time.Duration(conn.heartBeater.GetHeartbeatTime()) * time.Second)
+// writeLoop 通过监听outChan队列,向websocket写入消息.
+func (wc *WsConnection) writeLoop() {
+	timer := time.NewTimer(time.Duration(wc.heartBeater.GetHeartbeatTime()) * time.Second)
 	defer timer.Stop()
 	for {
 		select {
-		case msg := <-conn.outChan:
-			_ = conn.msgDispatch(msg)
+		case msg := <-wc.outChan:
+			_ = wc.msgDispatch(msg)
 		case <-timer.C:
-			if !conn.isAlive() {
-				_ = conn.removeAndClose()
+			if !wc.isAlive() {
+				_ = wc.removeAndClose()
 				goto EXIT
 			}
-			timer.Reset(time.Duration(conn.heartBeater.GetHeartbeatTime()) * time.Second)
-		case <-conn.closeChan:
+			timer.Reset(time.Duration(wc.heartBeater.GetHeartbeatTime()) * time.Second)
+		case <-wc.closeChan:
 			goto EXIT
 		}
 	}
@@ -207,27 +206,27 @@ EXIT:
 
 // msgDispatch为消息分发方法.
 // 内部通过判断MsgTo消息中ToType类型，向pushAll、pushGroup、pushConn下发消息.
-func (conn *WsConnection) msgDispatch(msg *WsMessage) error {
+func (wc *WsConnection) msgDispatch(msg *WsMessage) error {
 	switch msg.To.ToType {
 	case ToAll:
-		_ = conn.pushAll(msg)
+		_ = wc.pushAll(msg)
 	case ToGroup:
-		_ = conn.pushGroup(msg)
+		_ = wc.pushGroup(msg)
 	case ToConn:
-		_ = conn.pushConn(msg)
+		_ = wc.pushConn(msg)
 	default:
 	}
 	return nil
 }
 
 // pushAll发送给所有在线连接.
-func (conn *WsConnection) pushAll(msg *WsMessage) error {
-	allWsConn, err := conn.collect.GetAll()
+func (wc *WsConnection) pushAll(msg *WsMessage) error {
+	allConn, err := wc.collect.GetAll()
 	if err != nil {
 		return err
 	}
-	for _, wsConn := range allWsConn {
-		err := wsConn.WriteMessage(msg.MessageType, msg.Data)
+	for _, conn := range allConn {
+		err := conn.wsConn.WriteMessage(msg.MessageType, msg.Data)
 		if err != nil {
 			continue
 		}
@@ -235,14 +234,14 @@ func (conn *WsConnection) pushAll(msg *WsMessage) error {
 	return nil
 }
 
-// pushGroup发送给群组在线连接.
-func (conn *WsConnection) pushGroup(msg *WsMessage) error {
-	allWsConn, err := conn.collect.GetGroup(msg.To.To)
+// pushGroup 把消息发送给群组在线连接.
+func (wc *WsConnection) pushGroup(msg *WsMessage) error {
+	groupConn, err := wc.collect.GetGroup(msg.To.To)
 	if err != nil {
 		return err
 	}
-	for _, wsConn := range allWsConn {
-		err := wsConn.WriteMessage(msg.MessageType, msg.Data)
+	for _, conn := range groupConn {
+		err := conn.wsConn.WriteMessage(msg.MessageType, msg.Data)
 		if err != nil {
 			continue
 		}
@@ -250,55 +249,55 @@ func (conn *WsConnection) pushGroup(msg *WsMessage) error {
 	return nil
 }
 
-// pushConn发送给指定连接.
-func (conn *WsConnection) pushConn(msg *WsMessage) error {
+// pushConn 把消息发送给指定连接.
+func (wc *WsConnection) pushConn(msg *WsMessage) error {
 	if msg.To.To == "" {
 		return ErrIdEmpty
 	}
-	wsConn, err := conn.collect.Get(msg.To.To)
-	if err != nil || wsConn == nil {
+	conn, err := wc.collect.Get(msg.To.To)
+	if err != nil || conn == nil {
 		return err
 	}
-	err = wsConn.WriteMessage(msg.MessageType, msg.Data)
+	err = conn.wsConn.WriteMessage(msg.MessageType, msg.Data)
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
-// keepAlive更新WsConnection心跳
-func (conn *WsConnection) keepAlive() {
-	conn.lastHeartbeatTime = time.Now()
+// keepAlive 更新WsConnection心跳
+func (wc *WsConnection) keepAlive() {
+	wc.lastHeartbeatTime = time.Now()
 }
 
-// isAlive判断WsConnection是否太长时间没有心跳
-func (conn *WsConnection) isAlive() bool {
-	if time.Now().Sub(conn.lastHeartbeatTime) > time.Duration(conn.heartBeater.GetHeartbeatTime())*time.Second {
+// isAlive 判断WsConnection是否太长时间没有心跳
+func (wc *WsConnection) isAlive() bool {
+	if time.Now().Sub(wc.lastHeartbeatTime) > time.Duration(wc.heartBeater.GetHeartbeatTime())*time.Second {
 		return false
 	}
 	return true
 }
 
-// Collection描述了客户端维护的websocket在线连接接口的具体类型.
+// Collection 业务方实现维护长连接的接口.
 type Collection interface {
-	// 将连接写入集合
-	Set(id string, wsConn *websocket.Conn) error
-	// 从集合中获取对应id的连接
-	Get(id string) (wsConn *websocket.Conn, err error)
-	// 通过groupName获取对应的连接列表
-	GetGroup(groupName string) (wsConnList []*websocket.Conn, err error)
-	// 获取所有连接
-	GetAll() (wsConnList []*websocket.Conn, err error)
-	// 将id对应的连接从集合中删除
+	// Set 将连接写入集合
+	Set(id string, wsConn *WsConnection) error
+	// Get 从集合中获取对应id的连接
+	Get(id string) (wsConn *WsConnection, err error)
+	// GetGroup 通过groupId获取对应的连接列表
+	GetGroup(groupId string) (wsConnList []*WsConnection, err error)
+	// GetAll 获取所有连接
+	GetAll() (wsConnList []*WsConnection, err error)
+	// Del 将id对应的连接从集合中删除
 	Del(id string) error
 }
 
-// HeartBeater描述了维持心跳所需要的数据
+// HeartBeater 业务方实现维持心跳的接口
 type HeartBeater interface {
-	// 校验是否客户端Ping请求
+	// IsPingMsg 校验是否客户端Ping请求
 	IsPingMsg(msg []byte) bool
-	// 获取服务端->客户端Pong请求数据
+	// GetPongMsg 获取服务端->客户端Pong请求数据
 	GetPongMsg() []byte
-	// 获取心跳间隔有效时间（单位是秒）。如果两次心跳大于这个有效时间，连接将断开
+	// GetHeartbeatTime 获取心跳间隔有效时间（单位是秒）。如果两次心跳大于这个有效时间，连接将断开
 	GetHeartbeatTime() int
 }

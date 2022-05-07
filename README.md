@@ -5,27 +5,27 @@
 
 WsConnection
 ```go
-// WsConnection表示维护的一个websocket类型.
+// WsConnection 维护的websocket长连接.
 type WsConnection struct {
 	// 隐藏了内部字段
 }
 ```
 WsMessage
 ```go
-// WsMessage描述了一个消息实体.
+// WsMessage 定义了一个消息实体.
 type WsMessage struct {
-	// 消息发送对象
+	// To 消息发送对象
 	To MsgTo
-	// The message types are defined in RFC 6455, section 11.8.
+	// MessageType The message types are defined in RFC 6455, section 11.8.
 	MessageType int
-	// 消息内容
+	// Data 消息内容
 	Data []byte
 }
 
-// ToType定义了消息发送的对象类型.
+// ToType 定义了消息发送的对象类型.
 type ToType string
 
-// MsgTo定义了消息发送的对象.
+// MsgTo 定义了消息发送的对象.
 type MsgTo struct {
 	ToType ToType
 	To     string
@@ -52,41 +52,41 @@ type Conn interface {
 方法`Receive`接收客户端发送过来的消息；方法`Write`将消息发向客户端。
 
 ```go
-// Collection描述了客户端维护的websocket在线连接接口的具体类型.
+// Collection 业务方实现维护长连接的接口.
 type Collection interface {
-	// 将连接写入集合
-	Set(id string, wsConn *websocket.Conn) error
-	// 从集合中获取对应id的连接
-	Get(id string) (wsConn *websocket.Conn, err error)
-	// 通过groupName获取对应的连接列表
-	GetGroup(groupName string) (wsConnList []*websocket.Conn, err error)
-	// 获取所有连接
-	GetAll() (wsConnList []*websocket.Conn, err error)
-	// 将id对应的连接从集合中删除
+	// Set 将连接写入集合
+	Set(id string, wsConn *WsConnection) error
+	// Get 从集合中获取对应id的连接
+	Get(id string) (wsConn *WsConnection, err error)
+	// GetGroup 通过groupId获取对应的连接列表
+	GetGroup(groupId string) (wsConnList []*WsConnection, err error)
+	// GetAll 获取所有连接
+	GetAll() (wsConnList []*WsConnection, err error)
+	// Del 将id对应的连接从集合中删除
 	Del(id string) error
 }
 ```
-接口`Collection`描述了是如何维护一个在线连接。使用前，请先实现此接口。
+接口`Collection`业务方实现维护长连接的接口。使用前，请先实现此接口。
 
 ```go
-// HeartBeater描述了维持心跳所需要的数据
+// HeartBeater 业务方实现维持心跳的接口
 type HeartBeater interface {
-	// 校验是否客户端Ping请求
+	// IsPingMsg 校验是否客户端Ping请求
 	IsPingMsg(msg []byte) bool
-	// 获取服务端->客户端Pong请求数据
+	// GetPongMsg 获取服务端->客户端Pong请求数据
 	GetPongMsg() []byte
-	// 获取心跳间隔有效时间（单位是秒）。如果两次心跳大于这个有效时间，连接将断开
+	// GetHeartbeatTime 获取心跳间隔有效时间（单位是秒）。如果两次心跳大于这个有效时间，连接将断开
 	GetHeartbeatTime() int
 }
 ```
-接口`HeartBeater`描述了维持心跳所需要的数据。使用前，请先实现此接口。
+接口`HeartBeater`业务方实现维持心跳的接口。使用前，请先实现此接口。
 
 ## 方法说明
 
 ```go
 func NewWsConnection(collect Collection, heartBeater HeartBeater) *WsConnection
 ```
-方法`NewWsConnection`为新建一个`WsConnection`连接。
+方法`NewWsConnection`为新建一个`WsConnection`类型的长连接。
 入参`collect`为`Collection`接口类的具体实现；入参`heartBeater`为`HeartBeater`接口的具体实现。
 
 ```go
@@ -101,23 +101,24 @@ func (conn *WsConnection) Write(msg *WsMessage) (err error)
  ```go
 import (
 	"fmt"
-	"github.com/gorilla/websocket"
-	"github.com/lcr2000/goWs"
+	ws "github.com/lcr2000/goWs"
 	"net/http"
 )
 
-func Ws(w http.ResponseWriter, r *http.Request) {
-	conn := ws.NewWsConnection(collect{}, beat{})
+func WsHandler(w http.ResponseWriter, r *http.Request) {
+	conn := NewWsConnection(collect{}, beat{})
 	if err := conn.Open(w, r); err != nil {
 		return
 	}
 	for {
+		// 读取消息
 		msg, err := conn.Receive()
 		if err != nil {
 			break
 		}
 		fmt.Println(string(msg.Data))
-		err = conn.Write(&ws.WsMessage{
+		// 发送消息
+		err = conn.Write(&WsMessage{
 			To:          msg.To,
 			MessageType: msg.MessageType,
 			Data:        msg.Data,
@@ -131,23 +132,44 @@ func Ws(w http.ResponseWriter, r *http.Request) {
 // collect为实现Collection接口的具体类。
 type collect struct{}
 
-func (e collect) Set(id string, wsConn *websocket.Conn) error {
+func (c collect) Set(id string, wsConn *WsConnection) error {
+	m.RLock()
+	defer m.RUnlock()
+	col[id] = wsConn
 	return nil
 }
 
-func (e collect) Get(id string) (wsConn *websocket.Conn, err error) {
-	return
+func (c collect) Get(id string) (wsConn *WsConnection, err error) {
+	m.RLock()
+	defer m.RUnlock()
+	conn, ok := col[id]
+	if !ok {
+		err = errors.New("id is not exist")
+		return
+	}
+	return conn, nil
 }
 
-func (e collect) GetGroup(groupName string) (wsConnList []*websocket.Conn, err error) {
-	return
+func (c collect) GetGroup(groupId string) (wsConnList []*WsConnection, err error) {
+	m.RLock()
+	defer m.RUnlock()
+	for _, conn := range col {
+		wsConnList = append(wsConnList, conn)
+	}
+	return wsConnList, nil
 }
 
-func (e collect) GetAll() (wsConnList []*websocket.Conn, err error) {
-	return
+func (c collect) GetAll() (wsConnList []*WsConnection, err error) {
+	m.RLock()
+	defer m.RUnlock()
+	for _, conn := range col {
+		wsConnList = append(wsConnList, conn)
+	}
+	return wsConnList, nil
 }
 
-func (e collect) Del(id string) error {
+func (c collect) Del(id string) error {
+	delete(col, id)
 	return nil
 }
 
