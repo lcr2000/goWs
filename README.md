@@ -110,7 +110,7 @@ func WsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		fmt.Println(string(msg.Data))
 		// 发送消息
-		err = conn.Write(&WsMessage{
+		err = conn.Write(&ws.Message{
 			MessageType: msg.MessageType,
 			Data:        msg.Data,
 		})
@@ -130,7 +130,7 @@ func init() {
 
 type connect struct {
 	sync.RWMutex
-	connect map[string]*Connection
+	connect map[string]*ws.Connection
 }
 
 func (c *connect) Add(ID string, wsConn *ws.Connection) {
@@ -172,11 +172,11 @@ func (c *callback) ConnClose(ID string) {
 type beat struct{}
 
 func (b *beat) IsPingMsg(msg []byte) bool {
-	return string(msg) == Ping
+	return string(msg) == ws.Ping
 }
 
 func (b *beat) GetPongMsg() []byte {
-	return []byte(Pong)
+	return []byte(ws.Pong)
 }
 
 func (b *beat) GetAliveTime() int {
