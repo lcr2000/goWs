@@ -20,14 +20,22 @@ type Conn interface {
 	Write(msg *Message) (err error)
 }
 
+// Heartbeat 业务方实现维持心跳的接口
+type Heartbeat interface {
+	// IsPingMsg 校验是否Ping
+	IsPingMsg(msg []byte) bool
+	// GetPongMsg 获取服务端->客户端Pong请求数据
+	GetPongMsg() []byte
+	// GetAliveTime 获取连接活跃时间（秒）如果两次心跳大于这个有效时间连接将断开
+	GetAliveTime() int
+}
+
 // Connection 维护的长连接.
 type Connection struct {
 	// id 标识id
 	id string
-	// callback 回调接口
-	callback Callback
-	// heartBeater 心跳接口
-	heartBeater HeartBeater
+	// heartbeat 心跳接口
+	heartbeat Heartbeat
 	// conn 底层长连接
 	conn *websocket.Conn
 	// inChan 读队列
@@ -60,11 +68,10 @@ var upgrade = websocket.Upgrader{
 }
 
 // NewConnection 新建Connection实例.
-func NewConnection(callback Callback, heartBeater HeartBeater) *Connection {
+func NewConnection(heartBeater Heartbeat) *Connection {
 	return &Connection{
 		id:            uuid.NewString(),
-		callback:      callback,
-		heartBeater:   heartBeater,
+		heartbeat:     heartBeater,
 		conn:          nil,
 		inChan:        make(chan *Message, 1024),
 		outChan:       make(chan *Message, 1024),
@@ -74,77 +81,76 @@ func NewConnection(callback Callback, heartBeater HeartBeater) *Connection {
 }
 
 // GetConnID 获取连接ID
-func (wc *Connection) GetConnID() string {
-	return wc.id
+func (c *Connection) GetConnID() string {
+	return c.id
 }
 
 // Close 关闭连接
-func (wc *Connection) Close() error {
-	return wc.removeAndClose()
+func (c *Connection) Close() error {
+	return c.close()
 }
 
-// removeAndClose 移除维护的连接、关闭wsConn
-func (wc *Connection) removeAndClose() error {
-	_ = wc.conn.Close()
-	wc.mutex.Lock()
-	defer wc.mutex.Unlock()
-	if !wc.isClosed {
-		close(wc.closeChan)
-		wc.isClosed = true
+// close 关闭连接
+func (c *Connection) close() error {
+	_ = c.conn.Close()
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	if !c.isClosed {
+		close(c.closeChan)
+		c.isClosed = true
 	}
-	wc.callback.ConnClose(wc.id)
 	return nil
 }
 
 // Open 开启连接
-func (wc *Connection) Open(w http.ResponseWriter, r *http.Request) error {
+func (c *Connection) Open(w http.ResponseWriter, r *http.Request) error {
 	conn, err := upgrade.Upgrade(w, r, nil)
 	if err != nil {
 		return err
 	}
-	wc.conn = conn
-	go wc.readLoop()
-	go wc.writeLoop()
+	c.conn = conn
+	go c.readLoop()
+	go c.writeLoop()
 	return nil
 }
 
 // Receive 接收数据
-func (wc *Connection) Receive() (msg *Message, err error) {
+func (c *Connection) Receive() (msg *Message, err error) {
 	select {
-	case msg = <-wc.inChan:
-	case <-wc.closeChan:
+	case msg = <-c.inChan:
+	case <-c.closeChan:
 		err = ErrConnClose
 	}
 	return
 }
 
 // Write 写入数据
-func (wc *Connection) Write(msg *Message) (err error) {
+func (c *Connection) Write(msg *Message) (err error) {
 	select {
-	case wc.outChan <- msg:
-	case <-wc.closeChan:
+	case c.outChan <- msg:
+	case <-c.closeChan:
 		err = ErrConnClose
 	}
 	return
 }
 
 // readLoop 通过监听消息,向inChan写入数据
-func (wc *Connection) readLoop() {
+func (c *Connection) readLoop() {
 	for {
-		msgType, data, err := wc.conn.ReadMessage()
+		msgType, data, err := c.conn.ReadMessage()
 		if err != nil {
-			_ = wc.removeAndClose()
+			_ = c.close()
 			goto EXIT
 		}
-		if wc.isPing(data) {
+		if c.isPing(data) {
 			continue
 		}
 		select {
-		case wc.inChan <- &Message{
+		case c.inChan <- &Message{
 			MessageType: msgType,
 			Data:        data,
 		}:
-		case <-wc.closeChan:
+		case <-c.closeChan:
 			goto EXIT
 		}
 	}
@@ -154,34 +160,34 @@ EXIT:
 }
 
 // isPing 是否Ping
-func (wc *Connection) isPing(msg []byte) bool {
-	if !wc.heartBeater.IsPingMsg(msg) {
+func (c *Connection) isPing(msg []byte) bool {
+	if !c.heartbeat.IsPingMsg(msg) {
 		return false
 	}
-	wc.keepAlive()
-	_ = wc.Write(&Message{
+	c.keepAlive()
+	_ = c.Write(&Message{
 		MessageType: websocket.TextMessage,
-		Data:        wc.heartBeater.GetPongMsg(),
+		Data:        c.heartbeat.GetPongMsg(),
 	})
 	return true
 }
 
 // writeLoop 通过监听outChan队列,向连接写入消息
-func (wc *Connection) writeLoop() {
-	timer := time.NewTimer(time.Duration(wc.heartBeater.GetAliveTime()) * time.Second)
+func (c *Connection) writeLoop() {
+	timer := time.NewTimer(time.Duration(c.heartbeat.GetAliveTime()) * time.Second)
 	defer timer.Stop()
 	for {
 		select {
-		case msg := <-wc.outChan:
-			wc.keepAlive()
-			_ = wc.conn.WriteMessage(msg.MessageType, msg.Data)
+		case msg := <-c.outChan:
+			c.keepAlive()
+			_ = c.conn.WriteMessage(msg.MessageType, msg.Data)
 		case <-timer.C:
-			if !wc.isAlive() {
-				_ = wc.removeAndClose()
+			if !c.isAlive() {
+				_ = c.close()
 				goto EXIT
 			}
-			timer.Reset(time.Duration(wc.heartBeater.GetAliveTime()) * time.Second)
-		case <-wc.closeChan:
+			timer.Reset(time.Duration(c.heartbeat.GetAliveTime()) * time.Second)
+		case <-c.closeChan:
 			goto EXIT
 		}
 	}
@@ -191,27 +197,11 @@ EXIT:
 }
 
 // keepAlive 保持活跃状态
-func (wc *Connection) keepAlive() {
-	wc.lastAliveTime = time.Now()
+func (c *Connection) keepAlive() {
+	c.lastAliveTime = time.Now()
 }
 
 // isAlive 判断连接是否活跃
-func (wc *Connection) isAlive() bool {
-	return time.Since(wc.lastAliveTime) <= time.Duration(wc.heartBeater.GetAliveTime())*time.Second
-}
-
-// Callback 业务方实现的回调接口
-type Callback interface {
-	// ConnClose 连接关闭
-	ConnClose(id string)
-}
-
-// HeartBeater 业务方实现维持心跳的接口
-type HeartBeater interface {
-	// IsPingMsg 校验是否Ping
-	IsPingMsg(msg []byte) bool
-	// GetPongMsg 获取服务端->客户端Pong请求数据
-	GetPongMsg() []byte
-	// GetAliveTime 获取连接活跃时间（秒）如果两次心跳大于这个有效时间连接将断开
-	GetAliveTime() int
+func (c *Connection) isAlive() bool {
+	return time.Since(c.lastAliveTime) <= time.Duration(c.heartbeat.GetAliveTime())*time.Second
 }

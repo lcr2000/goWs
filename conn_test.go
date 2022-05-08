@@ -14,11 +14,11 @@ func TestConn(t *testing.T) {
 }
 
 func wsHandler(w http.ResponseWriter, r *http.Request) {
-	conn := NewConnection(&callback{}, &beat{})
+	conn := NewConnection(&heartbeat{})
 	if err := conn.Open(w, r); err != nil {
 		return
 	}
-	con.Add(conn.GetConnID(), conn)
+	conManager.Add(conn.GetConnID(), conn)
 	for {
 		// 读取消息
 		msg, err := conn.Receive()
@@ -38,64 +38,62 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 var (
-	con connect
+	conManager *connectManager
 )
 
 func init() {
-	con.connect = make(map[string]*Connection)
+	conManager = &connectManager{
+		connect: make(map[string]*Connection),
+	}
 }
 
-type connect struct {
+type connectManager struct {
 	sync.RWMutex
 	connect map[string]*Connection
 }
 
-func (c *connect) Add(ID string, wsConn *Connection) {
-	c.RLock()
-	defer c.RUnlock()
-	c.connect[ID] = wsConn
+func (cm *connectManager) Add(ID string, conn *Connection) {
+	cm.RLock()
+	defer cm.RUnlock()
+	cm.connect[ID] = conn
 }
 
-func (c *connect) Get(ID string) (*Connection, error) {
-	c.RLock()
-	defer c.RUnlock()
-	conn, ok := c.connect[ID]
+func (cm *connectManager) Get(ID string) (*Connection, error) {
+	cm.RLock()
+	defer cm.RUnlock()
+	conn, ok := cm.connect[ID]
 	if !ok {
-		return nil, errors.New("connect is not exist")
+		return nil, errors.New("connection is not exist")
 	}
 	return conn, nil
 }
 
-func (c *connect) GetAll() []*Connection {
-	c.RLock()
-	defer c.RUnlock()
-	connList := make([]*Connection, 0, len(c.connect))
-	for _, conn := range c.connect {
+func (cm *connectManager) GetAll() []*Connection {
+	cm.RLock()
+	defer cm.RUnlock()
+	connList := make([]*Connection, 0, len(cm.connect))
+	for _, conn := range cm.connect {
 		connList = append(connList, conn)
 	}
 	return connList
 }
 
-func (c *connect) Del(ID string) {
-	delete(c.connect, ID)
+func (cm *connectManager) Del(ID string) {
+	cm.RLock()
+	defer cm.RUnlock()
+	delete(cm.connect, ID)
 }
 
-type callback struct{}
+type heartbeat struct{}
 
-func (c *callback) ConnClose(ID string) {
-	con.Del(ID)
-}
-
-type beat struct{}
-
-func (b *beat) IsPingMsg(msg []byte) bool {
+func (b *heartbeat) IsPingMsg(msg []byte) bool {
 	return string(msg) == Ping
 }
 
-func (b *beat) GetPongMsg() []byte {
+func (b *heartbeat) GetPongMsg() []byte {
 	return []byte(Pong)
 }
 
-func (b *beat) GetAliveTime() int {
+func (b *heartbeat) GetAliveTime() int {
 	return 600
 }

@@ -1,23 +1,21 @@
 # goWs
-基于gorilla封装的并发安全的Golang Websocket组件
+基于 gorilla 封装的并发安全的 Golang Websocket 组件
 
 ## 结构体
 
 ```go
-// Connection 维护的长连接
+// Connection 维护的长连接.
 type Connection struct {
 	// id 标识id
 	id string
-	// callback 回调接口
-	callback Callback
-	// heartBeater 心跳接口
-	heartBeater HeartBeater
+	// heartbeat 心跳接口
+	heartbeat Heartbeat
 	// conn 底层长连接
 	conn *websocket.Conn
 	// inChan 读队列
-	inChan chan *WsMessage
+	inChan chan *Message
 	// outChan 写队列
-	outChan chan *WsMessage
+	outChan chan *Message
 	// closeChan 关闭通知
 	closeChan chan struct{}
 	// lastAliveTime 最近一次活跃时间
@@ -56,16 +54,8 @@ type Conn interface {
 ```
 
 ```go
-// Callback 业务方实现的回调接口
-type Callback interface {
-	// ConnClose 连接关闭
-	ConnClose(id string)
-}
-```
-
-```go
-// HeartBeater 业务方实现维持心跳的接口
-type HeartBeater interface {
+// Heartbeat 业务方实现维持心跳的接口
+type Heartbeat interface {
 	// IsPingMsg 校验是否Ping
 	IsPingMsg(msg []byte) bool
 	// GetPongMsg 获取服务端->客户端Pong请求数据
@@ -78,14 +68,15 @@ type HeartBeater interface {
 ## 方法
 
 ```go
-func NewConnection(callback Callback, heartBeater HeartBeater) *WsConnection
+func NewConnection(heartBeater Heartbeat) *Connection
 ```
 
 ```go
-func (conn *WsConnection) Close() error
-func (conn *WsConnection) Open(w http.ResponseWriter, r *http.Request) error
-func (conn *WsConnection) Receive() (msg *WsMessage, err error)
-func (conn *WsConnection) Write(msg *WsMessage) (err error)
+func (c *Connection) GetConnID() string
+func (c *Connection) Close() error
+func (c *Connection) Open(w http.ResponseWriter, r *http.Request) error
+func (c *Connection) Receive() (msg *WsMessage, err error)
+func (c *Connection) Write(msg *WsMessage) (err error)
 ```
 
 ## 快速开始
@@ -97,7 +88,7 @@ import (
 )
 
 func WsHandler(w http.ResponseWriter, r *http.Request) {
-	conn := ws.NewConnection(&callback{}, &beat{})
+	conn := ws.NewConnection(&heartbeat{})
 	if err := conn.Open(w, r); err != nil {
 		return
 	}
@@ -121,65 +112,63 @@ func WsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 var (
-	con connect
+	conManager *connectManager
 )
 
 func init() {
-	con.connect = make(map[string]*ws.Connection)
+	conManager = &connectManager{
+		connect: make(map[string]*ws.Connection),
+	}
 }
 
-type connect struct {
+type connectManager struct {
 	sync.RWMutex
 	connect map[string]*ws.Connection
 }
 
-func (c *connect) Add(ID string, wsConn *ws.Connection) {
-	c.RLock()
-	defer c.RUnlock()
-	c.connect[ID] = wsConn
+func (cm *connectManager) Add(ID string, conn *ws.Connection) {
+	cm.RLock()
+	defer cm.RUnlock()
+	cm.connect[ID] = conn
 }
 
-func (c *connect) Get(ID string) (*ws.Connection, error) {
-	c.RLock()
-	defer c.RUnlock()
-	conn, ok := c.connect[ID]
+func (cm *connectManager) Get(ID string) (*ws.Connection, error) {
+	cm.RLock()
+	defer cm.RUnlock()
+	conn, ok := cm.connect[ID]
 	if !ok {
-		return nil, errors.New("connect is not exist")
+		return nil, errors.New("connection is not exist")
 	}
 	return conn, nil
 }
 
-func (c *connect) GetAll() []*ws.Connection {
-	c.RLock()
-	defer c.RUnlock()
-	connList := make([]*ws.Connection, 0, len(c.connect))
-	for _, conn := range c.connect {
+func (cm *connectManager) GetAll() []*ws.Connection {
+	cm.RLock()
+	defer cm.RUnlock()
+	connList := make([]*ws.Connection, 0, len(cm.connect))
+	for _, conn := range cm.connect {
 		connList = append(connList, conn)
 	}
 	return connList
 }
 
-func (c *connect) Del(ID string) {
-	delete(c.connect, ID)
+func (cm *connectManager) Del(ID string) {
+	cm.RLock()
+	defer cm.RUnlock()
+	delete(cm.connect, ID)
 }
 
-type callback struct{}
+type heartbeat struct{}
 
-func (c *callback) ConnClose(ID string) {
-	con.Del(ID)
+func (b *heartbeat) IsPingMsg(msg []byte) bool {
+	return string(msg) == Ping
 }
 
-type beat struct{}
-
-func (b *beat) IsPingMsg(msg []byte) bool {
-	return string(msg) == ws.Ping
+func (b *heartbeat) GetPongMsg() []byte {
+	return []byte(Pong)
 }
 
-func (b *beat) GetPongMsg() []byte {
-	return []byte(ws.Pong)
-}
-
-func (b *beat) GetAliveTime() int {
+func (b *heartbeat) GetAliveTime() int {
 	return 600
 }
 ```
