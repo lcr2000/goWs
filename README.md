@@ -1,6 +1,10 @@
 # goWs
 基于 gorilla 封装的并发安全的 Golang Websocket 组件
 
+## UML
+
+![]( https://github.com/lcr2000/goWs/blob/main/uml.png)
+
 ## 结构体
 
 ```go
