@@ -134,7 +134,7 @@ func (c *Connection) Write(msg *Message) (err error) {
 	return
 }
 
-// readLoop 通过监听消息,向inChan写入数据
+// readLoop 监听客户端消息
 func (c *Connection) readLoop() {
 	for {
 		msgType, data, err := c.conn.ReadMessage()
@@ -142,7 +142,12 @@ func (c *Connection) readLoop() {
 			_ = c.close()
 			goto EXIT
 		}
-		if c.isPing(data) {
+		c.keepAlive()
+		if c.heartbeat.IsPingMsg(data) {
+			_ = c.Write(&Message{
+				MessageType: websocket.TextMessage,
+				Data:        c.heartbeat.GetPongMsg(),
+			})
 			continue
 		}
 		select {
@@ -159,27 +164,13 @@ EXIT:
 	return
 }
 
-// isPing 是否Ping
-func (c *Connection) isPing(msg []byte) bool {
-	if !c.heartbeat.IsPingMsg(msg) {
-		return false
-	}
-	c.keepAlive()
-	_ = c.Write(&Message{
-		MessageType: websocket.TextMessage,
-		Data:        c.heartbeat.GetPongMsg(),
-	})
-	return true
-}
-
-// writeLoop 通过监听outChan队列,向连接写入消息
+// writeLoop 向连接写入数据
 func (c *Connection) writeLoop() {
 	timer := time.NewTimer(time.Duration(c.heartbeat.GetAliveTime()) * time.Second)
 	defer timer.Stop()
 	for {
 		select {
 		case msg := <-c.outChan:
-			c.keepAlive()
 			_ = c.conn.WriteMessage(msg.MessageType, msg.Data)
 		case <-timer.C:
 			if !c.isAlive() {
