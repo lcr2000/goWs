@@ -19,6 +19,7 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conManager.Add(conn.GetConnID(), conn)
+	defer conManager.Del(conn.GetConnID())
 	for {
 		// 读取消息
 		msg, err := conn.Receive()

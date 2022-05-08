@@ -92,7 +92,8 @@ func WsHandler(w http.ResponseWriter, r *http.Request) {
 	if err := conn.Open(w, r); err != nil {
 		return
 	}
-	con.Add(conn.GetConnID(), conn)
+	conManager.Add(conn.GetConnID(), conn)
+    defer conManager.Del(conn.GetConnID())
 	for {
 		// 读取消息
 		msg, err := conn.Receive()
@@ -161,11 +162,11 @@ func (cm *connectManager) Del(ID string) {
 type heartbeat struct{}
 
 func (b *heartbeat) IsPingMsg(msg []byte) bool {
-	return string(msg) == Ping
+	return string(msg) == ws.Ping
 }
 
 func (b *heartbeat) GetPongMsg() []byte {
-	return []byte(Pong)
+	return []byte(ws.Pong)
 }
 
 func (b *heartbeat) GetAliveTime() int {
