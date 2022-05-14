@@ -3,6 +3,7 @@ package gows
 import (
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -20,38 +21,6 @@ type Conn interface {
 	Write(msg *Message) (err error)
 }
 
-// Heartbeat 业务方实现维持心跳的接口
-type Heartbeat interface {
-	// IsPingMsg 校验是否Ping
-	IsPingMsg(msg []byte) bool
-	// GetPongMsg 获取服务端->客户端Pong请求数据
-	GetPongMsg() []byte
-	// GetAliveTime 获取连接活跃时间（秒）如果两次心跳大于这个有效时间连接将断开
-	GetAliveTime() int
-}
-
-// Connection 维护的长连接.
-type Connection struct {
-	// id 标识id
-	id string
-	// heartbeat 心跳接口
-	heartbeat Heartbeat
-	// conn 底层长连接
-	conn *websocket.Conn
-	// inChan 读队列
-	inChan chan *Message
-	// outChan 写队列
-	outChan chan *Message
-	// closeChan 关闭通知
-	closeChan chan struct{}
-	// lastAliveTime 最近一次活跃时间
-	lastAliveTime time.Time
-	// mutex 保护closeChan只被执行一次
-	mutex sync.Mutex
-	// isClosed closeChan状态
-	isClosed bool
-}
-
 // Message 定义了一个消息实体.
 type Message struct {
 	// MessageType The message types are defined in RFC 6455, section 11.8.
@@ -60,29 +29,63 @@ type Message struct {
 	Data []byte
 }
 
-// upgrade http升级websocket协议的配置. 允许所有CORS跨域请求.
-var upgrade = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool {
-		return true
-	},
+// Connection 维护的长连接.
+type Connection struct {
+	// id 标识id
+	id string
+	// conn 底层长连接
+	conn *websocket.Conn
+	// inChan 读队列
+	inChan chan *Message
+	// outChan 写队列
+	outChan chan *Message
+	// closeChan 关闭通知
+	closeChan chan struct{}
+	// heartbeatInterval 心跳检测间隔, 秒
+	heartbeatInterval int
+	// lastHeartbeatTime 最近一次心跳时间
+	lastHeartbeatTime time.Time
+	// mutex 保护 closeChan 只被执行一次
+	mutex sync.Mutex
+	// isClosed closeChan状态
+	isClosed bool
 }
 
-// NewConnection 新建Connection实例.
-func NewConnection(heartBeater Heartbeat) *Connection {
-	return &Connection{
-		id:            uuid.NewString(),
-		heartbeat:     heartBeater,
-		conn:          nil,
-		inChan:        make(chan *Message, 1024),
-		outChan:       make(chan *Message, 1024),
-		closeChan:     make(chan struct{}, 1),
-		lastAliveTime: time.Now(),
+// Options 可选参数
+type Options struct {
+	// InChanSize 读队列大小, 默认1024
+	InChanSize int
+	// OutChanSize 写队列大小, 默认1024
+	OutChanSize int
+	// HeartbeatInterval 心跳检测间隔, 当心跳间隔大于这个时间连接将断开, 默认300s
+	HeartbeatInterval int
+}
+
+// NewConnection 新建 Connection实例.
+func NewConnection(opts ...*Options) *Connection {
+	inChanSize, outChanSize := DefaultInChanSize, DefaultOutChanSize
+	heartbeatInterval := DefaultHeartbeatInterval
+	if len(opts) > 0 {
+		opt := opts[0]
+		if opt.InChanSize > 0 {
+			inChanSize = opt.InChanSize
+		}
+		if opt.OutChanSize > 0 {
+			outChanSize = opt.OutChanSize
+		}
+		if opt.HeartbeatInterval > 0 {
+			heartbeatInterval = opt.HeartbeatInterval
+		}
 	}
-}
-
-// GetConnID 获取连接ID
-func (c *Connection) GetConnID() string {
-	return c.id
+	return &Connection{
+		id:                uuid.NewString(),
+		conn:              nil,
+		inChan:            make(chan *Message, inChanSize),
+		outChan:           make(chan *Message, outChanSize),
+		closeChan:         make(chan struct{}, 1),
+		heartbeatInterval: heartbeatInterval,
+		lastHeartbeatTime: time.Now(),
+	}
 }
 
 // Close 关闭连接
@@ -114,6 +117,63 @@ func (c *Connection) Open(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
+// upgrade http升级websocket协议的配置. 允许所有CORS跨域请求.
+var upgrade = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool {
+		return true
+	},
+}
+
+// readLoop 监听客户端消息
+func (c *Connection) readLoop() {
+	for {
+		msgType, data, err := c.conn.ReadMessage()
+		if err != nil {
+			_ = c.close()
+			goto EXIT
+		}
+		select {
+		case c.inChan <- &Message{
+			MessageType: msgType,
+			Data:        data,
+		}:
+		case <-c.closeChan:
+			goto EXIT
+		}
+	}
+EXIT:
+	// 确保连接被关闭
+	return
+}
+
+// writeLoop 向连接写入数据
+func (c *Connection) writeLoop() {
+	timer := time.NewTimer(time.Duration(c.heartbeatInterval) * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case msg := <-c.outChan:
+			_ = c.conn.WriteMessage(msg.MessageType, msg.Data)
+		case <-timer.C:
+			if !c.isAlive() {
+				_ = c.close()
+				goto EXIT
+			}
+			timer.Reset(time.Duration(c.heartbeatInterval) * time.Second)
+		case <-c.closeChan:
+			goto EXIT
+		}
+	}
+EXIT:
+	// 确保连接被关闭
+	return
+}
+
+// isAlive 判断连接是否活跃
+func (c *Connection) isAlive() bool {
+	return time.Since(c.lastHeartbeatTime) <= time.Duration(c.heartbeatInterval)*time.Second
+}
+
 // Receive 接收数据
 func (c *Connection) Receive() (msg *Message, err error) {
 	select {
@@ -134,65 +194,17 @@ func (c *Connection) Write(msg *Message) (err error) {
 	return
 }
 
-// readLoop 监听客户端消息
-func (c *Connection) readLoop() {
-	for {
-		msgType, data, err := c.conn.ReadMessage()
-		if err != nil {
-			_ = c.close()
-			goto EXIT
-		}
-		c.keepAlive()
-		if c.heartbeat.IsPingMsg(data) {
-			_ = c.Write(&Message{
-				MessageType: websocket.TextMessage,
-				Data:        c.heartbeat.GetPongMsg(),
-			})
-			continue
-		}
-		select {
-		case c.inChan <- &Message{
-			MessageType: msgType,
-			Data:        data,
-		}:
-		case <-c.closeChan:
-			goto EXIT
-		}
-	}
-EXIT:
-	// 确保连接被关闭
-	return
+// GetConnID 获取连接ID
+func (c *Connection) GetConnID() string {
+	return c.id
 }
 
-// writeLoop 向连接写入数据
-func (c *Connection) writeLoop() {
-	timer := time.NewTimer(time.Duration(c.heartbeat.GetAliveTime()) * time.Second)
-	defer timer.Stop()
-	for {
-		select {
-		case msg := <-c.outChan:
-			_ = c.conn.WriteMessage(msg.MessageType, msg.Data)
-		case <-timer.C:
-			if !c.isAlive() {
-				_ = c.close()
-				goto EXIT
-			}
-			timer.Reset(time.Duration(c.heartbeat.GetAliveTime()) * time.Second)
-		case <-c.closeChan:
-			goto EXIT
-		}
-	}
-EXIT:
-	// 确保连接被关闭
-	return
+// GetRemoteAddr 获取远程地址
+func (c *Connection) GetRemoteAddr() net.Addr {
+	return c.conn.RemoteAddr()
 }
 
-// keepAlive 保持活跃状态
-func (c *Connection) keepAlive() {
-	c.lastAliveTime = time.Now()
-}
-
-// isAlive 判断连接是否活跃
-func (c *Connection) isAlive() bool {
-	return time.Since(c.lastAliveTime) <= time.Duration(c.heartbeat.GetAliveTime())*time.Second
+// KeepHeartbeat 保持心跳
+func (c *Connection) KeepHeartbeat() {
+	c.lastHeartbeatTime = time.Now()
 }

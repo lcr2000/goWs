@@ -1,10 +1,8 @@
 package gows
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
-	"sync"
 	"testing"
 )
 
@@ -14,12 +12,14 @@ func TestConn(t *testing.T) {
 }
 
 func wsHandler(w http.ResponseWriter, r *http.Request) {
-	conn := NewConnection(&heartbeat{})
+	// 新建连接实例
+	conn := NewConnection()
+	// 开启连接
 	if err := conn.Open(w, r); err != nil {
 		return
 	}
-	conManager.Add(conn.GetConnID(), conn)
-	defer conManager.Del(conn.GetConnID())
+	// 关闭连接
+	defer conn.Close()
 	for {
 		// 读取消息
 		msg, err := conn.Receive()
@@ -36,65 +36,4 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-}
-
-var (
-	conManager *connectManager
-)
-
-func init() {
-	conManager = &connectManager{
-		connect: make(map[string]*Connection),
-	}
-}
-
-type connectManager struct {
-	sync.RWMutex
-	connect map[string]*Connection
-}
-
-func (cm *connectManager) Add(ID string, conn *Connection) {
-	cm.RLock()
-	defer cm.RUnlock()
-	cm.connect[ID] = conn
-}
-
-func (cm *connectManager) Get(ID string) (*Connection, error) {
-	cm.RLock()
-	defer cm.RUnlock()
-	conn, ok := cm.connect[ID]
-	if !ok {
-		return nil, errors.New("connection is not exist")
-	}
-	return conn, nil
-}
-
-func (cm *connectManager) GetAll() []*Connection {
-	cm.RLock()
-	defer cm.RUnlock()
-	connList := make([]*Connection, 0, len(cm.connect))
-	for _, conn := range cm.connect {
-		connList = append(connList, conn)
-	}
-	return connList
-}
-
-func (cm *connectManager) Del(ID string) {
-	cm.RLock()
-	defer cm.RUnlock()
-	delete(cm.connect, ID)
-}
-
-type heartbeat struct{}
-
-func (b *heartbeat) IsPingMsg(msg []byte) bool {
-	return string(msg) == Ping
-}
-
-func (b *heartbeat) GetPongMsg() []byte {
-	return []byte(Pong)
-}
-
-func (b *heartbeat) GetAliveTime() int {
-	return 600
 }
